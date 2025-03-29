@@ -6,19 +6,37 @@ def init(ContextInfo):
     try:
         ContextInfo.tradestock = '600900.SH'  # 长江电力
         ContextInfo.set_universe([ContextInfo.tradestock])
-        ContextInfo.accountid = '3556642'
+        ContextInfo.accountid = '8883556642'
         
-        # 获取历史数据用于ATR计算
-        hist_data = ContextInfo.get_history_data(30, '1d', ['high','low','close'])
-        if not hist_data or ContextInfo.tradestock not in hist_data:
-            print("警告：历史数据获取失败，使用默认网格参数")
+        # 获取历史数据 - 修复参数类型问题，使用单独获取每个字段
+        try:
+            high_data = ContextInfo.get_history_data(30, '1d', 'high')
+            low_data = ContextInfo.get_history_data(30, '1d', 'low')
+            close_data = ContextInfo.get_history_data(30, '1d', 'close')
+            
+            if (high_data and low_data and close_data and 
+                ContextInfo.tradestock in high_data and 
+                ContextInfo.tradestock in low_data and 
+                ContextInfo.tradestock in close_data):
+                
+                high_prices = high_data[ContextInfo.tradestock]['high']
+                low_prices = low_data[ContextInfo.tradestock]['low']
+                closes = close_data[ContextInfo.tradestock]['close']
+                
+                # 过滤有效价格
+                high_prices = [x for x in high_prices if x > 0]
+                low_prices = [x for x in low_prices if x > 0]
+                closes = [x for x in closes if x > 0]
+            else:
+                print("警告：历史数据获取失败，使用默认网格参数")
+                high_prices = []
+                low_prices = []
+                closes = []
+        except Exception as e:
+            print(f"获取历史数据异常: {str(e)}")
             high_prices = []
             low_prices = []
             closes = []
-        else:
-            high_prices = [x for x in hist_data[ContextInfo.tradestock]['high'] if x > 0]
-            low_prices = [x for x in hist_data[ContextInfo.tradestock]['low'] if x > 0]
-            closes = [x for x in hist_data[ContextInfo.tradestock]['close'] if x > 0]
         
         # 计算动态ATR (Average True Range)
         if len(closes) > 1:
@@ -64,7 +82,7 @@ def init(ContextInfo):
             np.linspace(lower_bound, upper_bound, ContextInfo.grid_count), 2
         ).tolist()
         
-        # 网格状态管理
+        # 初始化网格状态管理
         ContextInfo.grid_positions = {price: 0 for price in ContextInfo.grid_prices}
         ContextInfo.grid_shares = {price: 0 for price in ContextInfo.grid_prices}
         ContextInfo.grid_cost = {}    # 记录每格买入成本价
@@ -78,7 +96,8 @@ def init(ContextInfo):
         
         print(f"=== 网格交易初始化成功 ===")
         print(f"网格范围: {lower_bound:.2f} - {upper_bound:.2f}")
-        print(f"网格步长: {ContextInfo.grid_step:.2f} ({round(ContextInfo.grid_step/closes[-1]*100, 2)}%)")
+        if closes:
+            print(f"网格步长: {ContextInfo.grid_step:.2f} ({round(ContextInfo.grid_step/closes[-1]*100, 2)}%)")
         print(f"网格数量: {ContextInfo.grid_count}")
         print(f"网格价格: {[round(p, 2) for p in ContextInfo.grid_prices]}")
         
@@ -91,6 +110,8 @@ def handlebar(ContextInfo):
     try:
         # 检查更新频率 (每60秒更新一次)
         current_time = time.time()
+        if not hasattr(ContextInfo, 'last_update'):
+            ContextInfo.last_update = 0
         if current_time - ContextInfo.last_update < 60:
             return
         ContextInfo.last_update = current_time
@@ -139,7 +160,7 @@ def handlebar(ContextInfo):
                         
                         # 更新持仓状态
                         update_position(ContextInfo, grid_price, buy_qty, order_price)
-                        print(f"⬇️ 网格买入: {buy_qty}股 @ {order_price:.2f} | 网格: {grid_price:.2f}")
+                        print(f"网格买入: {buy_qty}股 @ {order_price:.2f} | 网格: {grid_price:.2f}")
                     
             # 卖出：当价格上穿网格线
             elif cross_up(current_price, ContextInfo.last_price, grid_price):
@@ -161,7 +182,7 @@ def handlebar(ContextInfo):
                             
                             # 更新持仓状态
                             update_position(ContextInfo, grid_price, -sell_qty, order_price)
-                            print(f"⬆️ 网格卖出: {sell_qty}股 @ {order_price:.2f} | 盈利: {profit:.2f} | 网格: {grid_price:.2f}")
+                            print(f"网格卖出: {sell_qty}股 @ {order_price:.2f} | 盈利: {profit:.2f} | 网格: {grid_price:.2f}")
         
         # 更新上次价格
         ContextInfo.last_price = current_price
@@ -185,10 +206,11 @@ def get_current_price(ContextInfo):
         # 实时行情获取失败，回退到日线收盘价
         hist_data = ContextInfo.get_history_data(1, '1d', 'close')
         if hist_data and ContextInfo.tradestock in hist_data:
-            return hist_data[ContextInfo.tradestock][-1]
+            return hist_data[ContextInfo.tradestock]['close'][-1]
             
         return None
-    except:
+    except Exception as e:
+        print(f"获取价格异常: {str(e)}")
         return None
 
 def get_total_assets(ContextInfo):
@@ -198,7 +220,8 @@ def get_total_assets(ContextInfo):
         if account_info:
             return account_info[0].m_dBalance + account_info[0].m_dMarketValue
         return 100000  # 默认资金
-    except:
+    except Exception as e:
+        print(f"获取总资产异常: {str(e)}")
         return 100000
 
 def get_available_cash(ContextInfo):
@@ -208,38 +231,47 @@ def get_available_cash(ContextInfo):
         if account_info:
             return account_info[0].m_dAvailable
         return 50000  # 默认可用资金
-    except:
+    except Exception as e:
+        print(f"获取可用资金异常: {str(e)}")
         return 50000
 
 def check_trend(ContextInfo):
     """检查趋势是否适合交易 (缓存计算结果以提高效率)"""
-    current_day = time.strftime('%Y%m%d')
-    
-    # 如果今日已计算过，直接返回缓存结果
-    if ContextInfo.trend_cache["timestamp"] == current_day:
-        ma20 = ContextInfo.trend_cache["ma20"]
-        ma60 = ContextInfo.trend_cache["ma60"]
-    else:
-        # 重新计算均线
-        hist_data = ContextInfo.get_history_data(60, '1d', 'close')
-        if not hist_data or ContextInfo.tradestock not in hist_data:
-            return True  # 数据不足时默认允许交易
-            
-        closes = hist_data[ContextInfo.tradestock]
-        ma20 = np.mean(closes[-20:]) if len(closes) >= 20 else None
-        ma60 = np.mean(closes) if len(closes) >= 60 else None
+    try:
+        current_day = time.strftime('%Y%m%d')
         
-        # 更新缓存
-        ContextInfo.trend_cache = {
-            "ma20": ma20,
-            "ma60": ma60,
-            "timestamp": current_day
-        }
-    
-    # 趋势判断：MA20 > MA60 为多头趋势
-    if ma20 is not None and ma60 is not None:
-        return ma20 >= ma60 * 0.98  # 允许2%的容差
-    return True
+        # 如果今日已计算过，直接返回缓存结果
+        if ContextInfo.trend_cache["timestamp"] == current_day:
+            ma20 = ContextInfo.trend_cache["ma20"]
+            ma60 = ContextInfo.trend_cache["ma60"]
+        else:
+            # 重新计算均线 - 修复参数类型问题
+            hist_data_20 = ContextInfo.get_history_data(20, '1d', 'close')
+            hist_data_60 = ContextInfo.get_history_data(60, '1d', 'close')
+            
+            if not hist_data_20 or not hist_data_60 or ContextInfo.tradestock not in hist_data_20:
+                return True  # 数据不足时默认允许交易
+                
+            closes_20 = hist_data_20[ContextInfo.tradestock]['close']
+            closes_60 = hist_data_60[ContextInfo.tradestock]['close']
+            
+            ma20 = np.mean(closes_20) if len(closes_20) >= 20 else None
+            ma60 = np.mean(closes_60) if len(closes_60) >= 60 else None
+            
+            # 更新缓存
+            ContextInfo.trend_cache = {
+                "ma20": ma20,
+                "ma60": ma60,
+                "timestamp": current_day
+            }
+        
+        # 趋势判断：MA20 > MA60 为多头趋势
+        if ma20 is not None and ma60 is not None:
+            return ma20 >= ma60 * 0.98  # 允许2%的容差
+        return True
+    except Exception as e:
+        print(f"检查趋势异常: {str(e)}")
+        return True
 
 def check_risk_control(ContextInfo, current_price, total_assets):
     """风险控制检查"""
@@ -254,15 +286,20 @@ def check_risk_control(ContextInfo, current_price, total_assets):
             return True
             
         return False
-    except:
+    except Exception as e:
+        print(f"风险控制检查异常: {str(e)}")
         return False
 
 def calculate_lots(grid_value, price, ContextInfo):
     """计算买入股数(向下取整到100的倍数)"""
-    if price <= 0:
+    try:
+        if price <= 0:
+            return 0
+        shares = int(grid_value / price / ContextInfo.min_lots) * ContextInfo.min_lots
+        return max(0, shares)
+    except Exception as e:
+        print(f"计算买入股数异常: {str(e)}")
         return 0
-    shares = int(grid_value / price / ContextInfo.min_lots) * ContextInfo.min_lots
-    return max(0, shares)
 
 def execute_order(ContextInfo, direction, qty, price):
     """执行交易订单"""
@@ -274,24 +311,27 @@ def execute_order(ContextInfo, direction, qty, price):
             order_volume(ContextInfo.tradestock, qty, 0, 
                         ContextInfo.accountid, "ORDER_TYPE_SELL", price)
         return True
-    except:
-        print(f"下单失败: {direction} {qty}股 @ {price:.2f}")
+    except Exception as e:
+        print(f"下单失败: {direction} {qty}股 @ {price:.2f}, 错误: {str(e)}")
         return False
 
 def update_position(ContextInfo, grid_price, qty, price):
     """更新网格持仓状态"""
-    # 更新网格状态
-    ContextInfo.grid_positions[grid_price] = 1 if qty > 0 else 0
-    ContextInfo.grid_shares[grid_price] = max(0, ContextInfo.grid_shares.get(grid_price, 0) + qty)
-    
-    # 更新总持仓
-    ContextInfo.total_position += qty
-    
-    # 买入时记录成本，卖出时清除成本记录
-    if qty > 0:
-        ContextInfo.grid_cost[grid_price] = price * (1 + ContextInfo.slippage)
-    elif qty < 0 and ContextInfo.grid_shares[grid_price] == 0:
-        ContextInfo.grid_cost.pop(grid_price, None)
+    try:
+        # 更新网格状态
+        ContextInfo.grid_positions[grid_price] = 1 if qty > 0 else 0
+        ContextInfo.grid_shares[grid_price] = max(0, ContextInfo.grid_shares.get(grid_price, 0) + qty)
+        
+        # 更新总持仓
+        ContextInfo.total_position += qty
+        
+        # 买入时记录成本，卖出时清除成本记录
+        if qty > 0:
+            ContextInfo.grid_cost[grid_price] = price * (1 + ContextInfo.slippage)
+        elif qty < 0 and ContextInfo.grid_shares[grid_price] == 0:
+            ContextInfo.grid_cost.pop(grid_price, None)
+    except Exception as e:
+        print(f"更新持仓状态异常: {str(e)}")
 
 def cross_up(current, previous, level):
     """检查价格是否上穿某一水平"""
@@ -303,22 +343,25 @@ def cross_down(current, previous, level):
 
 def print_status(ContextInfo, price, total_assets):
     """打印策略状态"""
-    # 每10分钟输出一次详细状态(减少日志量)
-    if int(time.time()) % 600 < 60:
-        active_grids = sum(1 for v in ContextInfo.grid_positions.values() if v > 0)
-        
-        print("\n==== 网格策略状态 ====")
-        print(f"当前价格: {price:.2f} | 总资产: {total_assets:.2f}")
-        print(f"持仓总量: {ContextInfo.total_position}股 | 激活网格: {active_grids}/{ContextInfo.grid_count}")
-        print(f"累计利润: {ContextInfo.grid_profits:.2f}")
-        
-        # 显示所有激活的网格
-        if active_grids > 0:
-            print("\n激活的网格:")
-            for grid_price, is_active in ContextInfo.grid_positions.items():
-                if is_active:
-                    shares = ContextInfo.grid_shares[grid_price]
-                    cost = ContextInfo.grid_cost.get(grid_price, 0)
-                    profit_pct = (price / cost - 1) * 100 if cost > 0 else 0
-                    print(f"  网格 {grid_price:.2f}: {shares}股 | 成本 {cost:.2f} | 盈亏 {profit_pct:.1f}%")
-        print("="*30)
+    try:
+        # 每10分钟输出一次详细状态(减少日志量)
+        if int(time.time()) % 600 < 60:
+            active_grids = sum(1 for v in ContextInfo.grid_positions.values() if v > 0)
+            
+            print("\n==== 网格策略状态 ====")
+            print(f"当前价格: {price:.2f} | 总资产: {total_assets:.2f}")
+            print(f"持仓总量: {ContextInfo.total_position}股 | 激活网格: {active_grids}/{ContextInfo.grid_count}")
+            print(f"累计利润: {ContextInfo.grid_profits:.2f}")
+            
+            # 显示所有激活的网格
+            if active_grids > 0:
+                print("\n激活的网格:")
+                for grid_price, is_active in ContextInfo.grid_positions.items():
+                    if is_active:
+                        shares = ContextInfo.grid_shares[grid_price]
+                        cost = ContextInfo.grid_cost.get(grid_price, 0)
+                        profit_pct = (price / cost - 1) * 100 if cost > 0 else 0
+                        print(f"  网格 {grid_price:.2f}: {shares}股 | 成本 {cost:.2f} | 盈亏 {profit_pct:.1f}%")
+            print("="*30)
+    except Exception as e:
+        print(f"打印状态异常: {str(e)}")
