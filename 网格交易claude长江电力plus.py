@@ -85,7 +85,7 @@ def init(ContextInfo):
         # 初始化网格状态管理
         ContextInfo.grid_positions = {price: 0 for price in ContextInfo.grid_prices}
         ContextInfo.grid_shares = {price: 0 for price in ContextInfo.grid_prices}
-        ContextInfo.grid_cost = {}    # 记录每格买入成本价
+        ContextInfo.grid_cost = {}    # 记录每格买入成本价和时间
         ContextInfo.grid_profits = 0  # 累计网格利润
         ContextInfo.total_position = 0
         ContextInfo.last_price = None
@@ -166,7 +166,13 @@ def handlebar(ContextInfo):
             elif cross_up(current_price, ContextInfo.last_price, grid_price):
                 # 检查该网格是否有持仓
                 if ContextInfo.grid_positions[grid_price] == 1:
-                    cost = ContextInfo.grid_cost.get(grid_price, 0)
+                    # 检查是否满足 T+1 限制
+                    if not check_t_plus_1(ContextInfo, grid_price):
+                        print(f"无法卖出: {grid_price} 的持仓未满足 T+1 限制")
+                        continue
+                    
+                    cost_info = ContextInfo.grid_cost.get(grid_price, {})
+                    cost = cost_info.get("price", 0)
                     profit_pct = (current_price / cost - 1) * 100 if cost > 0 else 0
                     
                     # 只在有盈利时卖出
@@ -251,7 +257,6 @@ def check_trend(ContextInfo):
             
             if not hist_data_20 or not hist_data_60 or ContextInfo.tradestock not in hist_data_20:
                 return True  # 数据不足时默认允许交易
-                
             closes_20 = hist_data_20[ContextInfo.tradestock]['close']
             closes_60 = hist_data_60[ContextInfo.tradestock]['close']
             
@@ -302,7 +307,7 @@ def calculate_lots(grid_value, price, ContextInfo):
         return 0
 
 def execute_order(ContextInfo, direction, qty, price):
-    """执行交易订单"""
+    """执行交易订单，并记录时间戳"""
     try:
         if direction == 'BUY':
             order_volume(ContextInfo.tradestock, qty, 0, 
@@ -325,9 +330,12 @@ def update_position(ContextInfo, grid_price, qty, price):
         # 更新总持仓
         ContextInfo.total_position += qty
         
-        # 买入时记录成本，卖出时清除成本记录
+        # 买入时记录成本和时间，卖出时清除成本记录
         if qty > 0:
-            ContextInfo.grid_cost[grid_price] = price * (1 + ContextInfo.slippage)
+            ContextInfo.grid_cost[grid_price] = {
+                "price": price * (1 + ContextInfo.slippage),
+                "timestamp": time.time()
+            }
         elif qty < 0 and ContextInfo.grid_shares[grid_price] == 0:
             ContextInfo.grid_cost.pop(grid_price, None)
     except Exception as e:
@@ -359,9 +367,18 @@ def print_status(ContextInfo, price, total_assets):
                 for grid_price, is_active in ContextInfo.grid_positions.items():
                     if is_active:
                         shares = ContextInfo.grid_shares[grid_price]
-                        cost = ContextInfo.grid_cost.get(grid_price, 0)
+                        cost_info = ContextInfo.grid_cost.get(grid_price, {})
+                        cost = cost_info.get("price", 0)
                         profit_pct = (price / cost - 1) * 100 if cost > 0 else 0
                         print(f"  网格 {grid_price:.2f}: {shares}股 | 成本 {cost:.2f} | 盈亏 {profit_pct:.1f}%")
             print("="*30)
     except Exception as e:
         print(f"打印状态异常: {str(e)}")
+
+def check_t_plus_1(ContextInfo, grid_price):
+    """检查是否满足 T+1 限制"""
+    cost_info = ContextInfo.grid_cost.get(grid_price)
+    if not cost_info:
+        return False
+    # 如果买入时间超过一天，允许卖出
+    return time.time() - cost_info.get("timestamp", 0) >= 86400  # 86400 秒 = 1 天
